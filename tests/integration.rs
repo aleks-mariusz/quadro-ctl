@@ -1,7 +1,7 @@
 use quadro_ctl::config::{FanConfig, FanLabel, QuadroConfig};
 use quadro_ctl::protocol::{
-    self, CentiPercent, CurveData, FanId, Millicelsius, Percentage, Report, SensorIndex,
-    CTRL_REPORT_ID, CTRL_REPORT_SIZE, SECONDARY_REPORT, SECONDARY_REPORT_ID,
+    self, CentiPercent, CurveData, FanId, Percentage, Report, SensorIndex,
+    Temperature, CTRL_REPORT_ID, CTRL_REPORT_SIZE, SECONDARY_REPORT, SECONDARY_REPORT_ID,
 };
 use quadro_ctl::services::{MockDeviceFactory, NullLogger, NoopSleeper, QuadroService};
 
@@ -15,7 +15,7 @@ fn make_curve_points() -> Vec<serde_json::Value> {
     (0..16)
         .map(|i| {
             serde_json::json!({
-                "temp": 20000 + i * 1000,
+                "temp": 20.0 + i as f64 * 1.0,
                 "percentage": 20 + i * 5
             })
         })
@@ -147,7 +147,7 @@ fn apply_curve_writes_all_sixteen_temperature_and_pwm_points() {
     let base = FanId::Fan1.offset();
 
     for i in 0..16 {
-        let expected_temp = 20000 + i as u16 * 1000;
+        let expected_temp = 2000 + i as u16 * 100;
         let expected_pwm = (20 + i * 5) as u16 * 100;
         assert_eq!(
             protocol::read_be16(buffer, base + 0x15 + i * 2),
@@ -207,7 +207,7 @@ fn apply_preserves_unconfigured_fan_data() {
         protocol::write_be16(
             &mut buffer,
             fan2_base + 0x15 + i * 2,
-            25000 + i as u16 * 500,
+            2500 + i as u16 * 50,
         );
         protocol::write_be16(
             &mut buffer,
@@ -267,10 +267,10 @@ fn read_device_with_manual_fan1_and_curve_fan2() -> Report {
         FanId::Fan1,
         CentiPercent::from_percentage(Percentage::new(50).unwrap()),
     );
-    let mut temps = [Millicelsius(0); 16];
+    let mut temps = [Temperature::from_centi_degrees(0); 16];
     let mut pwms = [CentiPercent(0); 16];
     for i in 0..16u16 {
-        temps[i as usize] = Millicelsius(20000u16.wrapping_add(i * 1000));
+        temps[i as usize] = Temperature::from_centi_degrees(2000u16.wrapping_add(i * 100));
         pwms[i as usize] = CentiPercent::from_percentage(Percentage::new((20 + i * 5) as u8).unwrap());
     }
     let curve_data = CurveData {
@@ -332,7 +332,7 @@ fn read_fan2_first_point_has_correct_temp() {
     let report = read_device_with_manual_fan1_and_curve_fan2();
 
     match &report.fans[&FanLabel::Fan2] {
-        FanConfig::Curve { points, .. } => assert_eq!(points.points()[0].temp, 20000),
+        FanConfig::Curve { points, .. } => assert_eq!(points.points()[0].temp, Temperature::from_celsius(20.0).unwrap()),
         _ => panic!("expected curve"),
     }
 }
@@ -352,7 +352,7 @@ fn read_fan2_last_point_has_correct_temp() {
     let report = read_device_with_manual_fan1_and_curve_fan2();
 
     match &report.fans[&FanLabel::Fan2] {
-        FanConfig::Curve { points, .. } => assert_eq!(points.points()[15].temp, 35000),
+        FanConfig::Curve { points, .. } => assert_eq!(points.points()[15].temp, Temperature::from_celsius(35.0).unwrap()),
         _ => panic!("expected curve"),
     }
 }
@@ -438,7 +438,7 @@ fn roundtrip_fan1_reads_back_all_curve_point_values() {
     match &report.fans[&FanLabel::Fan1] {
         FanConfig::Curve { points, .. } => {
             for i in 0..16 {
-                assert_eq!(points.points()[i].temp, 20000 + i as u16 * 1000);
+                assert_eq!(points.points()[i].temp, Temperature::from_celsius(20.0 + i as f64 * 1.0).unwrap());
                 assert_eq!(points.points()[i].percentage.value(), (20 + i * 5) as u8);
             }
         }

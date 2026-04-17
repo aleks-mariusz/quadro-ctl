@@ -1,7 +1,8 @@
+use std::fs;
 use std::os::unix::io::RawFd;
 
 use crate::error::QuadroError;
-use crate::protocol::{RawReport, RawStatusReport, CTRL_REPORT_ID, CTRL_REPORT_SIZE, SECONDARY_REPORT, SECONDARY_REPORT_ID, STATUS_REPORT_SIZE};
+use crate::protocol::{RawReport, RawStatusReport, RawVirtualSensorsReport, CTRL_REPORT_ID, CTRL_REPORT_SIZE, SECONDARY_REPORT, SECONDARY_REPORT_ID, STATUS_REPORT_SIZE};
 use crate::services::Logger;
 use super::HidrawDevice;
 
@@ -24,6 +25,40 @@ fn hidioc_grawinfo() -> libc::c_ulong {
     ioctl_ioc(IOC_READ, b'H' as u32, 0x03, std::mem::size_of::<HidrawDevinfo>() as u32)
 }
 
+const USBDEVFS_TYPE: u32 = b'U' as u32;
+const USBDEVFS_CLAIMINTERFACE_NR: u32 = 15;
+const USBDEVFS_RELEASEINTERFACE_NR: u32 = 16;
+const USBDEVFS_BULK_NR: u32 = 2;
+
+const VIRTUAL_SENSORS_BULK_ENDPOINT: u8 = 0x02;
+const VIRTUAL_SENSORS_USB_INTERFACE: u32 = 0;
+const VIRTUAL_SENSORS_BULK_TIMEOUT_MS: u32 = 2000;
+
+#[repr(C)]
+struct UsbdevfsBulktransfer {
+    ep: u32,
+    len: u32,
+    timeout: u32,
+    data: *mut libc::c_void,
+}
+
+fn usbdevfs_claiminterface() -> libc::c_ulong {
+    ioctl_ioc(IOC_READ, USBDEVFS_TYPE, USBDEVFS_CLAIMINTERFACE_NR, 4)
+}
+
+fn usbdevfs_releaseinterface() -> libc::c_ulong {
+    ioctl_ioc(IOC_READ, USBDEVFS_TYPE, USBDEVFS_RELEASEINTERFACE_NR, 4)
+}
+
+fn usbdevfs_bulk() -> libc::c_ulong {
+    ioctl_ioc(
+        IOC_WRITE | IOC_READ,
+        USBDEVFS_TYPE,
+        USBDEVFS_BULK_NR,
+        std::mem::size_of::<UsbdevfsBulktransfer>() as u32,
+    )
+}
+
 #[repr(C)]
 struct HidrawDevinfo {
     bustype: u32,
@@ -31,12 +66,137 @@ struct HidrawDevinfo {
     product: i16,
 }
 
-const QUADRO_VENDOR: i16 = 0x0c70;
-const QUADRO_PRODUCT: i16 = 0xf00d_u16 as i16;
+const QUADRO_VENDOR: u16 = 0x0c70;
+const QUADRO_PRODUCT: u16 = 0xf00d;
 
 pub struct LinuxHidrawDevice {
     fd: RawFd,
+    usb: Option<UsbBulkDevice>,
     logger: Box<dyn Logger>,
+}
+
+struct UsbBulkDevice {
+    fd: RawFd,
+    interface: u32,
+}
+
+impl UsbBulkDevice {
+    fn open(vendor: u16, product: u16, logger: &dyn Logger) -> Result<Self, QuadroError> {
+        let path = find_usb_device_path(vendor, product)?;
+        logger.info(&format!("[device] opening USB bulk device at {}", path));
+        let c_path = std::ffi::CString::new(path.clone())
+            .map_err(|e| QuadroError::InvalidDevicePath(e.to_string()))?;
+        let fd = unsafe { libc::open(c_path.as_ptr(), libc::O_RDWR) };
+        if fd < 0 {
+            let err = std::io::Error::last_os_error();
+            logger.error(&format!("[device] failed to open {}: {}", path, err));
+            return Err(QuadroError::DeviceOpen { path, source: err });
+        }
+        let interface: libc::c_uint = VIRTUAL_SENSORS_USB_INTERFACE as libc::c_uint;
+        let ret = unsafe {
+            libc::ioctl(fd, usbdevfs_claiminterface(), &interface as *const libc::c_uint)
+        };
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            unsafe { libc::close(fd); }
+            logger.error(&format!("[device] USBDEVFS_CLAIMINTERFACE error: {}", err));
+            return Err(QuadroError::Ioctl { operation: "USBDEVFS_CLAIMINTERFACE", source: err });
+        }
+        logger.info(&format!(
+            "[device] claimed USB interface {} on fd={}",
+            VIRTUAL_SENSORS_USB_INTERFACE, fd
+        ));
+        Ok(Self {
+            fd,
+            interface: VIRTUAL_SENSORS_USB_INTERFACE,
+        })
+    }
+
+    fn bulk_write(&self, endpoint: u8, data: &[u8], timeout_ms: u32, logger: &dyn Logger) -> Result<usize, QuadroError> {
+        let transfer = UsbdevfsBulktransfer {
+            ep: endpoint as u32,
+            len: data.len() as u32,
+            timeout: timeout_ms,
+            data: data.as_ptr() as *mut libc::c_void,
+        };
+        logger.info(&format!(
+            "[device] USBDEVFS_BULK: fd={}, ep=0x{:02x}, len={}, timeout={}ms",
+            self.fd,
+            endpoint,
+            data.len(),
+            timeout_ms
+        ));
+        let ret = unsafe {
+            libc::ioctl(self.fd, usbdevfs_bulk(), &transfer as *const UsbdevfsBulktransfer)
+        };
+        if ret < 0 {
+            let err = std::io::Error::last_os_error();
+            logger.error(&format!("[device] USBDEVFS_BULK error: {}", err));
+            return Err(QuadroError::Ioctl { operation: "USBDEVFS_BULK", source: err });
+        }
+        logger.info(&format!("[device] USBDEVFS_BULK wrote {} bytes", ret));
+        Ok(ret as usize)
+    }
+}
+
+impl Drop for UsbBulkDevice {
+    fn drop(&mut self) {
+        unsafe {
+            libc::ioctl(
+                self.fd,
+                usbdevfs_releaseinterface(),
+                &self.interface as *const libc::c_uint,
+            );
+            libc::close(self.fd);
+        }
+    }
+}
+
+fn find_usb_device_path(vendor: u16, product: u16) -> Result<String, QuadroError> {
+    let entries = fs::read_dir("/sys/bus/usb/devices").map_err(QuadroError::DeviceScan)?;
+    for entry in entries {
+        let entry = entry.map_err(QuadroError::DeviceScan)?;
+        let name = entry.file_name();
+        let name_str = name.to_string_lossy();
+        if name_str.contains(':') || name_str.starts_with("usb") {
+            // Skip interface endpoints (foo:1.0) and root hubs (usbN)
+            if name_str.contains(':') {
+                continue;
+            }
+        }
+        let path = entry.path();
+        let vid_s = match fs::read_to_string(path.join("idVendor")) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let pid_s = match fs::read_to_string(path.join("idProduct")) {
+            Ok(s) => s,
+            Err(_) => continue,
+        };
+        let vid = u16::from_str_radix(vid_s.trim(), 16).unwrap_or(0);
+        let pid = u16::from_str_radix(pid_s.trim(), 16).unwrap_or(0);
+        if vid != vendor || pid != product {
+            continue;
+        }
+        let busnum_s = fs::read_to_string(path.join("busnum"))
+            .map_err(|e| QuadroError::DeviceOpen {
+                path: path.join("busnum").to_string_lossy().into_owned(),
+                source: e,
+            })?;
+        let devnum_s = fs::read_to_string(path.join("devnum"))
+            .map_err(|e| QuadroError::DeviceOpen {
+                path: path.join("devnum").to_string_lossy().into_owned(),
+                source: e,
+            })?;
+        let busnum: u32 = busnum_s.trim().parse().map_err(|_| {
+            QuadroError::InvalidDevicePath(format!("invalid busnum: {}", busnum_s.trim()))
+        })?;
+        let devnum: u32 = devnum_s.trim().parse().map_err(|_| {
+            QuadroError::InvalidDevicePath(format!("invalid devnum: {}", devnum_s.trim()))
+        })?;
+        return Ok(format!("/dev/bus/usb/{:03}/{:03}", busnum, devnum));
+    }
+    Err(QuadroError::DeviceNotFound)
 }
 
 impl LinuxHidrawDevice {
@@ -51,7 +211,7 @@ impl LinuxHidrawDevice {
             return Err(QuadroError::DeviceOpen { path: path.to_string(), source: err });
         }
         logger.info(&format!("[device] opened {} -> fd={}", path, fd));
-        Ok(Self { fd, logger })
+        Ok(Self { fd, usb: None, logger })
     }
 
     fn ioctl_read(&self, report_id: u8, size: usize) -> Result<Vec<u8>, QuadroError> {
@@ -110,6 +270,24 @@ impl HidrawDevice for LinuxHidrawDevice {
         Ok(())
     }
 
+    fn write_virtual_sensors(&mut self, report: &RawVirtualSensorsReport) -> Result<(), QuadroError> {
+        let data = report.as_bytes();
+        if self.usb.is_none() {
+            let usb = UsbBulkDevice::open(QUADRO_VENDOR, QUADRO_PRODUCT, self.logger.as_ref())
+                .map_err(|e| QuadroError::ReportWrite(Box::new(e)))?;
+            self.usb = Some(usb);
+        }
+        let usb = self.usb.as_ref().expect("usb is Some after ensure");
+        usb.bulk_write(
+            VIRTUAL_SENSORS_BULK_ENDPOINT,
+            data,
+            VIRTUAL_SENSORS_BULK_TIMEOUT_MS,
+            self.logger.as_ref(),
+        )
+        .map_err(|e| QuadroError::ReportWrite(Box::new(e)))?;
+        Ok(())
+    }
+
     fn read_status_report(&mut self) -> Result<RawStatusReport, QuadroError> {
         let mut buf = vec![0u8; STATUS_REPORT_SIZE];
         self.logger.info(&format!(
@@ -140,7 +318,7 @@ impl Drop for LinuxHidrawDevice {
 pub fn find_quadro(logger: Box<dyn Logger>) -> Result<LinuxHidrawDevice, QuadroError> {
     logger.info(&format!(
         "[device] scanning /dev/hidraw* for QUADRO (vendor=0x{:04x}, product=0x{:04x})",
-        QUADRO_VENDOR as u16, QUADRO_PRODUCT as u16
+        QUADRO_VENDOR, QUADRO_PRODUCT
     ));
     let entries = std::fs::read_dir("/dev").map_err(QuadroError::DeviceScan)?;
 
@@ -179,7 +357,7 @@ pub fn find_quadro(logger: Box<dyn Logger>) -> Result<LinuxHidrawDevice, QuadroE
             path_str, info.vendor as u16, info.product as u16
         ));
 
-        if info.vendor == QUADRO_VENDOR && info.product == QUADRO_PRODUCT {
+        if info.vendor as u16 == QUADRO_VENDOR && info.product as u16 == QUADRO_PRODUCT {
             logger.info(&format!("[device] found QUADRO at {}", path_str));
             drop(device);
             return LinuxHidrawDevice::open(path_str, logger);

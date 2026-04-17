@@ -3,13 +3,14 @@ mod mock;
 pub use mock::MockHidrawDevice;
 
 use crate::error::QuadroError;
-use crate::protocol::{RawReport, RawStatusReport};
+use crate::protocol::{RawReport, RawStatusReport, RawVirtualSensorsReport};
 
 pub trait HidrawDevice {
     fn read_feature_report(&mut self) -> Result<RawReport, QuadroError>;
     fn write_feature_report(&mut self, report: &RawReport) -> Result<(), QuadroError>;
     fn commit(&mut self) -> Result<(), QuadroError>;
     fn read_status_report(&mut self) -> Result<RawStatusReport, QuadroError>;
+    fn write_virtual_sensors(&mut self, report: &RawVirtualSensorsReport) -> Result<(), QuadroError>;
 }
 
 #[cfg(target_os = "linux")]

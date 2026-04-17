@@ -38,6 +38,9 @@ pub enum QuadroError {
     #[error("{field} value {value} out of range 0-{max}")]
     ValueOutOfRange { field: &'static str, value: u8, max: u8 },
 
+    #[error("temperature {0}°C out of range 0.0-655.35")]
+    TemperatureOutOfRange(f64),
+
     #[error("hidraw device access is only supported on Linux")]
     UnsupportedPlatform,
 }

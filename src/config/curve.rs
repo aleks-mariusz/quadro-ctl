@@ -21,7 +21,7 @@ impl Curve {
                     fan: String::new(),
                     reason: format!(
                         "temperatures must be monotonically increasing, found {} followed by {}",
-                        window[0].temp, window[1].temp
+                        window[0].temp.to_celsius(), window[1].temp.to_celsius()
                     ),
                 });
             }
@@ -47,12 +47,12 @@ impl<'de> serde::Deserialize<'de> for Curve {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::protocol::Percentage;
+    use crate::protocol::{Percentage, Temperature};
 
     fn valid_points() -> Vec<CurvePoint> {
         (0..16)
             .map(|i| CurvePoint {
-                temp: 20000 + i * 2000,
+                temp: Temperature::from_celsius(20.0 + i as f64 * 2.0).unwrap(),
                 percentage: Percentage::new((20 + i * 5) as u8).unwrap(),
             })
             .collect()
@@ -73,7 +73,7 @@ mod tests {
     fn more_than_sixteen_points_rejected() {
         let mut points = valid_points();
         points.push(CurvePoint {
-            temp: 60000,
+            temp: Temperature::from_celsius(60.0).unwrap(),
             percentage: Percentage::new(99).unwrap(),
         });
         assert!(Curve::new(points).is_err());
@@ -89,7 +89,9 @@ mod tests {
     #[test]
     fn decreasing_temperatures_rejected() {
         let mut points = valid_points();
-        points[5].temp = points[4].temp - 1;
+        points[5].temp = Temperature::from_celsius(
+            points[4].temp.to_celsius() - 0.01
+        ).unwrap();
         assert!(Curve::new(points).is_err());
     }
 
@@ -102,7 +104,7 @@ mod tests {
     #[test]
     fn deserialize_valid_curve() {
         let json: Vec<serde_json::Value> = (0..16)
-            .map(|i| serde_json::json!({"temp": 20000 + i * 2000, "percentage": 20 + i * 5}))
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
             .collect();
         let json_str = serde_json::to_string(&json).unwrap();
         let curve: Curve = serde_json::from_str(&json_str).unwrap();
@@ -112,7 +114,7 @@ mod tests {
     #[test]
     fn deserialize_wrong_count_fails() {
         let json: Vec<serde_json::Value> = (0..8)
-            .map(|i| serde_json::json!({"temp": 20000 + i * 2000, "percentage": 20 + i * 5}))
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
             .collect();
         let json_str = serde_json::to_string(&json).unwrap();
         let result: Result<Curve, _> = serde_json::from_str(&json_str);
@@ -122,9 +124,9 @@ mod tests {
     #[test]
     fn deserialize_non_monotonic_fails() {
         let mut json: Vec<serde_json::Value> = (0..16)
-            .map(|i| serde_json::json!({"temp": 20000 + i * 2000, "percentage": 20 + i * 5}))
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
             .collect();
-        json[5] = serde_json::json!({"temp": 20000, "percentage": 40});
+        json[5] = serde_json::json!({"temp": 20.0, "percentage": 40});
         let json_str = serde_json::to_string(&json).unwrap();
         let result: Result<Curve, _> = serde_json::from_str(&json_str);
         assert!(result.is_err());

@@ -50,6 +50,16 @@ impl RawStatusReport {
             };
             temps.insert(format!("sensor{}", i + 1), value);
         }
+        for i in 0..QUADRO_NUM_VIRTUAL_SENSORS {
+            let offset = QUADRO_VIRTUAL_SENSORS_START + i * SENSOR_SIZE;
+            let raw = buffer::read_be16(&self.0, offset) as i16;
+            let value = if raw == DISCONNECTED_SENSOR {
+                None
+            } else {
+                Some(raw as f64 / 100.0)
+            };
+            temps.insert(format!("virtual{}", i + 1), value);
+        }
         temps
     }
 

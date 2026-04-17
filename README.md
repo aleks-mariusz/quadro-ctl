@@ -1,19 +1,60 @@
 # quadro-ctl
 
-CLI tool for bulk read/write operations on the [Aqua Computer QUADRO](https://www.aquacomputer.de/quadro.html) fan controller via hidraw.
+CLI tool for bulk read/write operations on the [Aqua Computer QUADRO](https://www.aquacomputer.de/quadro.html) fan controller.
+
+Controls the four fans (manual PWM or temperature curve) and feeds the firmware's **software sensors** with values read from the host OS (HDD temps, NVMe, CPU, etc.) so a curve can react to anything Linux can measure.
 
 ## Why
 
-The sysfs/hwmon interface performs individual USB round-trips for each operation (~9 seconds each). Configuring all 4 fans (PWM, temperature curves, sensor assignment) takes ~20 minutes via sysfs.
+The sysfs/hwmon interface performs individual USB round-trips for each operation (~9 seconds each). Configuring all 4 fans via sysfs takes ~20 minutes. `quadro-ctl` talks to the device directly: one HID feature-report read + one feature-report write + one commit report (~18 seconds for the whole configuration).
 
-`quadro-ctl` reads and writes the control report directly via `/dev/hidrawX`, configuring everything in a single read-modify-write cycle (~18 seconds total).
+It also supports things the kernel driver doesn't:
+
+- Selecting **software sensors (5-12)** or the **flow sensor (4)** as the curve input — the kernel driver only allows the 4 hardware sensors (0-3).
+- Writing **software sensor values** (report 0x04 via USB bulk on Interface 0 EP 0x02 OUT). The kernel driver doesn't expose this at all; `quadro-ctl` sends it directly via `USBDEVFS_BULK`.
+
+## Commands
+
+| Command | What it does |
+|---------|--------------|
+| `fans get` | Read the control report (fan modes, curves, sensor selection). Prints JSON. |
+| `fans set --config-file F` | Read control report, merge in the fans from `F`, write back, commit. |
+| `sensors set --config-file F` | Write software sensor values over USB bulk (report 0x04). |
+| `status` | Full device snapshot: sensor values (hardware + virtual), fan RPM/PWM/voltage/current, flow. Prints JSON. |
+
+Every command accepts `--device /dev/hidrawN` to pin a specific device. Without it, `quadro-ctl` scans `/dev/hidraw*` for VID `0x0c70` PID `0xf00d`.
+
+Logs go to **stderr**; data (JSON) goes to **stdout** — pipe safely.
 
 ## Usage
 
-### Read current configuration
+### `status` — read sensors, RPMs, PWMs
 
 ```sh
-sudo quadro-ctl read
+sudo quadro-ctl status
+```
+
+```json
+{
+  "device": { "serial": "32533-07983", "firmware": 1033, "power_cycles": 27 },
+  "temperatures": {
+    "sensor1": 22.42, "sensor2": null, "sensor3": null, "sensor4": null,
+    "virtual1": 30.0, "virtual2": null, ...
+  },
+  "fans": {
+    "fan1": { "rpm": 10115, "pwm": 10000, "voltage": 12.15, "current": 0.31, "power": 0.37 },
+    ...
+  },
+  "flow": 0.0
+}
+```
+
+`sensor1..sensor4` are the four hardware temperature inputs. `virtual1..virtual16` are the firmware's 16 software-sensor slots (see below).
+
+### `fans get` — inspect the current fan configuration
+
+```sh
+sudo quadro-ctl fans get
 ```
 
 ```json
@@ -21,82 +62,114 @@ sudo quadro-ctl read
   "fans": {
     "fan1": {
       "mode": "curve",
-      "sensor": 0,
+      "sensor": 5,
       "points": [
-        { "temp": 20000, "percentage": 20 },
-        { "temp": 25000, "percentage": 40 },
-        ...
+        { "temp": 20.0, "percentage": 20 },
+        { "temp": 22.0, "percentage": 25 },
+        ...16 points total...
+        { "temp": 50.0, "percentage": 95 }
       ]
     },
-    "fan2": {
-      "mode": "manual",
-      "percentage": 40
-    }
+    "fan2": { "mode": "manual", "percentage": 40 }
   }
 }
 ```
 
-### Apply configuration
+### `fans set` — write fan modes / curves
 
-Set fan2 to manual 60%:
+The config is **partial**: only the fans you include are changed. Unconfigured fans (and the rest of the control report) are preserved.
 
-```sh
-echo '{"fans":{"fan2":{"mode":"manual","percentage":60}}}' > config.json
-sudo quadro-ctl apply --config-file config.json
+Manual mode:
+
+```json
+{ "fans": { "fan2": { "mode": "manual", "percentage": 60 } } }
 ```
 
-Set fan1 to a temperature curve on sensor 0:
+Curve mode (fan1 follows software sensor 1):
 
 ```json
 {
   "fans": {
     "fan1": {
       "mode": "curve",
-      "sensor": 0,
+      "sensor": 5,
       "points": [
-        { "temp": 20000, "percentage": 20 },
-        { "temp": 22000, "percentage": 25 },
-        { "temp": 24000, "percentage": 30 },
-        { "temp": 26000, "percentage": 35 },
-        { "temp": 28000, "percentage": 40 },
-        { "temp": 30000, "percentage": 45 },
-        { "temp": 32000, "percentage": 50 },
-        { "temp": 34000, "percentage": 55 },
-        { "temp": 36000, "percentage": 60 },
-        { "temp": 38000, "percentage": 65 },
-        { "temp": 40000, "percentage": 70 },
-        { "temp": 42000, "percentage": 75 },
-        { "temp": 44000, "percentage": 80 },
-        { "temp": 46000, "percentage": 85 },
-        { "temp": 48000, "percentage": 90 },
-        { "temp": 50000, "percentage": 100 }
+        { "temp": 20.0, "percentage": 20 },
+        { "temp": 22.0, "percentage": 25 },
+        { "temp": 24.0, "percentage": 30 },
+        { "temp": 26.0, "percentage": 35 },
+        { "temp": 28.0, "percentage": 40 },
+        { "temp": 30.0, "percentage": 45 },
+        { "temp": 32.0, "percentage": 50 },
+        { "temp": 34.0, "percentage": 55 },
+        { "temp": 36.0, "percentage": 60 },
+        { "temp": 38.0, "percentage": 65 },
+        { "temp": 40.0, "percentage": 70 },
+        { "temp": 42.0, "percentage": 75 },
+        { "temp": 44.0, "percentage": 80 },
+        { "temp": 46.0, "percentage": 85 },
+        { "temp": 48.0, "percentage": 90 },
+        { "temp": 50.0, "percentage": 95 }
       ]
     }
   }
 }
 ```
 
-Curves require exactly 16 points with strictly increasing temperatures. Temperatures are in millicelsius (20000 = 20.0°C). Sensors are 0-3 (the 4 QUADRO temperature inputs).
-
-### Specify device path
-
 ```sh
-sudo quadro-ctl read --device /dev/hidraw0
-sudo quadro-ctl apply --device /dev/hidraw0 --config-file config.json
+sudo quadro-ctl fans set --config-file fan1.json
 ```
 
-If `--device` is omitted, the QUADRO is auto-detected by scanning `/dev/hidraw*`.
+Constraints:
 
-## Config format
+- Curves require **exactly 16 points**.
+- Temperatures must be **strictly increasing** (monotonic).
+- `temp` is in **°C** (with 0.01°C resolution; range 0.0–655.35).
+- `percentage` is 0–100.
+- `sensor` is an integer — see the sensor mapping below.
 
-The config is partial — only include the fans you want to change. Unconfigured fans are preserved as-is.
+### `sensors set` — feed software sensors
 
-| Field | Values |
-|-------|--------|
-| `mode` | `"manual"` or `"curve"` |
-| `percentage` | 0-100 (manual mode) |
-| `sensor` | 0-3 (curve mode, selects QUADRO temp input) |
-| `points` | Array of 16 `{ "temp", "percentage" }` objects (curve mode) |
+```sh
+echo '{"virtual1": 30.0, "virtual3": 45.5}' > vs.json
+sudo quadro-ctl sensors set --config-file vs.json
+```
+
+This writes report `0x04` over USB bulk (Interface 0, EP 0x02 OUT). Keys are `virtual1` … `virtual16`, values are °C.
+
+**Important behaviors:**
+
+- **Every call is an absolute overwrite.** Sensors not listed in the file are marked *disabled* on the device. To keep virtual1 and virtual2 both alive, include both in every call.
+- **Values expire.** The firmware invalidates sensor values if they are not refreshed; in testing they persist for at least ~5 s, so refreshing every 1–2 s is safe. A fan in curve mode whose sensor has expired will fall back to its minimum setting.
+- **Only `virtual1`..`virtual8` can drive fan curves.** Slots 9–16 exist and show up in `status`, but the firmware doesn't let the curves read them (those slots are "calculated virtual sensors" in Aquasuite's terminology).
+
+Typical wiring for a NAS: a systemd timer runs every 2 s, reads HDD/NVMe/CPU temps from `hwmon` or `smartctl`, builds the JSON, and calls `sensors set`. Fans configured in `curve` mode with `sensor: 5..12` follow those values.
+
+## Sensor index mapping
+
+The `sensor` field in a curve config selects the input for the fan:
+
+| Value  | Meaning |
+|--------|---------|
+| 0–3    | Hardware temperature sensors 1–4 (the four 2-pin inputs on the QUADRO) |
+| 4      | Flow sensor |
+| 5–12   | Software sensors 1–8 (correspond to `virtual1`..`virtual8` in `status`) |
+| 13–19  | Invalid / reserved — fan will fall back |
+| 65535  | "No sensor" — fan will fall back |
+
+## Units on the wire (for reference)
+
+The device uses centi-units almost everywhere:
+
+- Curve temperatures, status temperatures, virtual-sensor writes: **centi-°C** (×100). `30.0 °C = 3000`.
+- PWM / percentages: **centi-%** (×100). `50% = 5000`.
+- Flow rate in `status`: deci-L/h (÷10).
+
+`quadro-ctl` does these conversions for you; configs are written in human units (°C, %).
+
+## Running without root
+
+Both HID feature-report ioctls and USB bulk writes need privileged access by default. Either run under `sudo`, or install udev rules that grant access to the QUADRO (`/dev/hidraw*` and `/dev/bus/usb/<BUS>/<DEV>`) for a specific group.
 
 ## Building
 
@@ -104,8 +177,10 @@ The config is partial — only include the fans you want to change. Unconfigured
 cargo build --release
 ```
 
-Requires Linux (uses hidraw ioctls). Runs on x86_64 and aarch64.
+Linux-only (uses `hidraw` and `usbdevfs` ioctls). Tested on x86_64 and aarch64.
 
 ## Reference
 
-Protocol derived from the [aquacomputer_d5next](https://github.com/aleksamagicka/aquacomputer_d5next-hwmon) out-of-tree kernel driver.
+- Kernel driver: [aquacomputer_d5next-hwmon](https://github.com/aleksamagicka/aquacomputer_d5next-hwmon) (hardware-sensor curves only; doesn't cover software sensors).
+- Python reference project: [leoratte/aquacomputer-quadro-control](https://github.com/leoratte/aquacomputer-quadro-control) — confirms centi-°C units and layout.
+- Protocol details and reverse-engineering notes: see `RESEARCH.md`.

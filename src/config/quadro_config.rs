@@ -11,9 +11,6 @@ pub struct QuadroConfig {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::config::fan_config::CurvePoint;
-    use crate::config::curve::Curve;
-    use crate::protocol::{Percentage, SensorIndex};
 
     fn parse_manual_config() -> QuadroConfig {
         serde_json::from_str(r#"{"fans":{"fan1":{"mode":"manual","percentage":50}}}"#).unwrap()
@@ -21,7 +18,7 @@ mod tests {
 
     fn parse_curve_config() -> QuadroConfig {
         let points: Vec<serde_json::Value> = (0..16)
-            .map(|i| serde_json::json!({"temp": 20000 + i * 2000, "percentage": 20 + i * 5}))
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
             .collect();
         let json = serde_json::json!({
             "fans": { "fan2": { "mode": "curve", "sensor": 0, "points": points } }
@@ -83,7 +80,7 @@ mod tests {
     #[test]
     fn multiple_fans_deserialize_in_single_config() {
         let points: Vec<serde_json::Value> = (0..16)
-            .map(|i| serde_json::json!({"temp": 20000 + i * 2000, "percentage": 20 + i * 5}))
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
             .collect();
         let json = serde_json::json!({
             "fans": {
@@ -107,12 +104,12 @@ mod tests {
     }
 
     #[test]
-    fn sensor_index_above_3_fails_deserialization() {
+    fn sensor_index_above_19_fails_deserialization() {
         let points: Vec<serde_json::Value> = (0..16)
-            .map(|i| serde_json::json!({"temp": 20000 + i * 2000, "percentage": 20 + i * 5}))
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
             .collect();
         let json = serde_json::json!({
-            "fans": {"fan2": {"mode": "curve", "sensor": 4, "points": points}}
+            "fans": {"fan2": {"mode": "curve", "sensor": 20, "points": points}}
         });
 
         let result: Result<QuadroConfig, _> = serde_json::from_value(json);
@@ -121,9 +118,26 @@ mod tests {
     }
 
     #[test]
+    fn virtual_sensor_index_4_deserializes() {
+        let points: Vec<serde_json::Value> = (0..16)
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
+            .collect();
+        let json = serde_json::json!({
+            "fans": {"fan2": {"mode": "curve", "sensor": 4, "points": points}}
+        });
+
+        let config: QuadroConfig = serde_json::from_value(json).unwrap();
+
+        match &config.fans[&FanLabel::Fan2] {
+            FanConfig::Curve { sensor, .. } => assert_eq!(sensor.value(), 4),
+            _ => panic!("expected Curve"),
+        }
+    }
+
+    #[test]
     fn curve_with_wrong_point_count_fails_deserialization() {
         let points: Vec<serde_json::Value> = (0..8)
-            .map(|i| serde_json::json!({"temp": 20000 + i * 2000, "percentage": 20 + i * 5}))
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
             .collect();
         let json = serde_json::json!({
             "fans": {"fan2": {"mode": "curve", "sensor": 0, "points": points}}
@@ -137,9 +151,9 @@ mod tests {
     #[test]
     fn non_monotonic_temperatures_fail_deserialization() {
         let mut points: Vec<serde_json::Value> = (0..16)
-            .map(|i| serde_json::json!({"temp": 20000 + i * 2000, "percentage": 20 + i * 5}))
+            .map(|i| serde_json::json!({"temp": 20.0 + i as f64 * 2.0, "percentage": 20 + i * 5}))
             .collect();
-        points[5] = serde_json::json!({"temp": 20000, "percentage": 40});
+        points[5] = serde_json::json!({"temp": 20.0, "percentage": 40});
         let json = serde_json::json!({
             "fans": {"fan2": {"mode": "curve", "sensor": 0, "points": points}}
         });

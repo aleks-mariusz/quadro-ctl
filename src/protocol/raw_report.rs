@@ -1,13 +1,14 @@
 use std::collections::BTreeMap;
 
 use crate::config::{Curve, CurvePoint, FanConfig, FanLabel};
+use crate::error::QuadroError;
 
 use super::buffer;
 use super::centi_percent::CentiPercent;
 use super::curve_data::CurveData;
 use super::fan::{FanId, FanMode};
-use super::millicelsius::Millicelsius;
 use super::report::Report;
+use super::temperature::Temperature;
 
 pub struct RawReport(Vec<u8>);
 
@@ -31,7 +32,7 @@ impl RawReport {
         buffer::verify_checksum(&self.0)
     }
 
-    pub fn to_report(&self) -> Report {
+    pub fn to_report(&self) -> Result<Report, QuadroError> {
         let mut fans = BTreeMap::new();
         for (label, fan_id) in &FAN_LABELS {
             let mode = buffer::read_fan_mode(&self.0, *fan_id);
@@ -49,19 +50,19 @@ impl RawReport {
                         .iter()
                         .zip(curve_data.pwms.iter())
                         .map(|(t, p)| CurvePoint {
-                            temp: t.0,
+                            temp: *t,
                             percentage: p.to_percentage(),
                         })
                         .collect();
                     FanConfig::Curve {
                         sensor: curve_data.sensor,
-                        points: Curve::new(points).expect("device returned invalid curve"),
+                        points: Curve::new(points)?,
                     }
                 }
             };
             fans.insert(*label, fan_config);
         }
-        Report { fans }
+        Ok(Report { fans })
     }
 
     pub fn with_report(&self, report: &Report) -> RawReport {
@@ -75,10 +76,10 @@ impl RawReport {
                         buffer::apply_manual(&mut buf, *fan_id, cp);
                     }
                     FanConfig::Curve { sensor, points } => {
-                        let mut temps = [Millicelsius(0); 16];
+                        let mut temps = [Temperature::from_centi_degrees(0); 16];
                         let mut pwms = [CentiPercent(0); 16];
                         for (i, point) in points.points().iter().enumerate() {
-                            temps[i] = Millicelsius(point.temp);
+                            temps[i] = point.temp;
                             pwms[i] = CentiPercent::from_percentage(point.percentage);
                         }
                         let curve_data = CurveData {

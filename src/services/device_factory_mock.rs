@@ -3,7 +3,7 @@ use std::rc::Rc;
 
 use crate::device::HidrawDevice;
 use crate::error::QuadroError;
-use crate::protocol::{RawReport, RawStatusReport, CTRL_REPORT_ID, CTRL_REPORT_SIZE, SECONDARY_REPORT, SECONDARY_REPORT_ID, STATUS_REPORT_SIZE};
+use crate::protocol::{RawReport, RawStatusReport, RawVirtualSensorsReport, CTRL_REPORT_ID, CTRL_REPORT_SIZE, SECONDARY_REPORT, SECONDARY_REPORT_ID, STATUS_REPORT_SIZE, VIRTUAL_SENSORS_REPORT_ID};
 
 use super::DeviceFactory;
 
@@ -28,6 +28,11 @@ impl HidrawDevice for SharedMockDevice {
 
     fn commit(&mut self) -> Result<(), QuadroError> {
         self.writes.borrow_mut().push((SECONDARY_REPORT_ID, SECONDARY_REPORT.to_vec()));
+        Ok(())
+    }
+
+    fn write_virtual_sensors(&mut self, report: &RawVirtualSensorsReport) -> Result<(), QuadroError> {
+        self.writes.borrow_mut().push((VIRTUAL_SENSORS_REPORT_ID, report.as_bytes().to_vec()));
         Ok(())
     }
 

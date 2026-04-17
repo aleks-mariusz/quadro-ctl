@@ -5,11 +5,11 @@ pub struct SensorIndex(u8);
 
 impl SensorIndex {
     pub fn new(value: u8) -> Result<Self, QuadroError> {
-        if value > 3 {
+        if value > 19 {
             return Err(QuadroError::ValueOutOfRange {
                 field: "sensor",
                 value,
-                max: 3,
+                max: 19,
             });
         }
         Ok(Self(value))
@@ -45,8 +45,18 @@ mod tests {
     }
 
     #[test]
-    fn four_is_rejected() {
-        assert!(SensorIndex::new(4).is_err());
+    fn four_is_valid() {
+        assert_eq!(SensorIndex::new(4).unwrap().value(), 4);
+    }
+
+    #[test]
+    fn nineteen_is_valid() {
+        assert_eq!(SensorIndex::new(19).unwrap().value(), 19);
+    }
+
+    #[test]
+    fn twenty_is_rejected() {
+        assert!(SensorIndex::new(20).is_err());
     }
 
     #[test]
@@ -61,8 +71,8 @@ mod tests {
     }
 
     #[test]
-    fn deserialize_above_three_fails() {
-        let result: Result<SensorIndex, _> = serde_json::from_str("4");
+    fn deserialize_above_nineteen_fails() {
+        let result: Result<SensorIndex, _> = serde_json::from_str("20");
         assert!(result.is_err());
     }
 }

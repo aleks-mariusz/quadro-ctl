@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 
-use crate::protocol::{FanId, Percentage, SensorIndex};
+use crate::protocol::{FanId, Percentage, SensorIndex, Temperature};
 use super::curve::Curve;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord, Deserialize, Serialize)]
@@ -40,7 +40,7 @@ pub enum FanConfig {
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CurvePoint {
-    pub temp: u16,
+    pub temp: Temperature,
     pub percentage: Percentage,
 }
 

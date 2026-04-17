@@ -1,8 +1,8 @@
 use std::time::Duration;
 
-use crate::config::QuadroConfig;
+use crate::config::{QuadroConfig, VirtualSensorsConfig};
 use crate::error::QuadroError;
-use crate::protocol::{Report, Status};
+use crate::protocol::{RawVirtualSensorsReport, Report, Status};
 
 use super::{DeviceFactory, Logger, Sleeper};
 
@@ -32,7 +32,7 @@ impl<F: DeviceFactory, L: Logger, S: Sleeper> QuadroService<F, L, S> {
             self.logger.error("checksum mismatch in feature report");
         }
 
-        let report = raw.to_report();
+        let report = raw.to_report()?;
         self.logger.info("[read] report parsed successfully");
         Ok(report)
     }
@@ -42,7 +42,7 @@ impl<F: DeviceFactory, L: Logger, S: Sleeper> QuadroService<F, L, S> {
         self.logger.info("[apply] reading current feature report");
         let raw = device.read_feature_report()?;
 
-        let report = raw.to_report();
+        let report = raw.to_report()?;
         let updated = report.with_config(config);
         let updated_raw = raw.with_report(&updated);
         self.logger.info("[apply] config applied");
@@ -55,6 +55,21 @@ impl<F: DeviceFactory, L: Logger, S: Sleeper> QuadroService<F, L, S> {
         device.commit()?;
         self.logger.info("[apply] changes committed");
 
+        Ok(())
+    }
+
+    pub fn set_virtual_sensors(&self, device_path: Option<&str>, config: &VirtualSensorsConfig) -> Result<(), QuadroError> {
+        let mut device = self.device_factory.open(device_path)?;
+        let values: Vec<(usize, u16)> = config
+            .by_index()
+            .map_err(|reason| QuadroError::InvalidConfig { fan: String::new(), reason })?
+            .into_iter()
+            .map(|(i, t)| (i, t.to_centi_degrees()))
+            .collect();
+        let report = RawVirtualSensorsReport::new(&values);
+        self.logger.info("[set-virtual-sensors] writing report");
+        device.write_virtual_sensors(&report)?;
+        self.logger.info("[set-virtual-sensors] written");
         Ok(())
     }
 
