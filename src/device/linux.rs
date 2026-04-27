@@ -1,6 +1,7 @@
 use std::fs;
 use std::os::unix::io::RawFd;
 
+use crate::device::DeviceSpec;
 use crate::error::QuadroError;
 use crate::protocol::{RawReport, RawStatusReport, RawVirtualSensorsReport, CTRL_REPORT_ID, CTRL_REPORT_SIZE, SECONDARY_REPORT, SECONDARY_REPORT_ID, STATUS_REPORT_SIZE};
 use crate::services::Logger;
@@ -66,8 +67,9 @@ struct HidrawDevinfo {
     product: i16,
 }
 
-const QUADRO_VENDOR: u16 = 0x0c70;
+const AQUACOMPUTER_VENDOR: u16 = 0x0c70;
 const QUADRO_PRODUCT: u16 = 0xf00d;
+const OCTO_PRODUCT: u16 = 0xf011;
 
 pub struct LinuxHidrawDevice {
     fd: RawFd,
@@ -273,7 +275,7 @@ impl HidrawDevice for LinuxHidrawDevice {
     fn write_virtual_sensors(&mut self, report: &RawVirtualSensorsReport) -> Result<(), QuadroError> {
         let data = report.as_bytes();
         if self.usb.is_none() {
-            let usb = UsbBulkDevice::open(QUADRO_VENDOR, QUADRO_PRODUCT, self.logger.as_ref())
+            let usb = UsbBulkDevice::open(AQUACOMPUTER_VENDOR, QUADRO_PRODUCT, self.logger.as_ref())
                 .map_err(|e| QuadroError::ReportWrite(Box::new(e)))?;
             self.usb = Some(usb);
         }
@@ -315,11 +317,8 @@ impl Drop for LinuxHidrawDevice {
     }
 }
 
-pub fn find_quadro(logger: Box<dyn Logger>) -> Result<LinuxHidrawDevice, QuadroError> {
-    logger.info(&format!(
-        "[device] scanning /dev/hidraw* for QUADRO (vendor=0x{:04x}, product=0x{:04x})",
-        QUADRO_VENDOR, QUADRO_PRODUCT
-    ));
+pub fn find_device(logger: Box<dyn Logger>) -> Result<(LinuxHidrawDevice, DeviceSpec), QuadroError> {
+    logger.info("[device] scanning /dev/hidraw* for Aquacomputer devices (QUADRO/OCTO)");
     let entries = std::fs::read_dir("/dev").map_err(QuadroError::DeviceScan)?;
 
     for entry in entries {
@@ -357,12 +356,19 @@ pub fn find_quadro(logger: Box<dyn Logger>) -> Result<LinuxHidrawDevice, QuadroE
             path_str, info.vendor as u16, info.product as u16
         ));
 
-        if info.vendor as u16 == QUADRO_VENDOR && info.product as u16 == QUADRO_PRODUCT {
-            logger.info(&format!("[device] found QUADRO at {}", path_str));
-            drop(device);
-            return LinuxHidrawDevice::open(path_str, logger);
+        if info.vendor as u16 == AQUACOMPUTER_VENDOR {
+            if let Some(spec) = DeviceSpec::from_product_id(info.product as u16) {
+                logger.info(&format!("[device] found {} at {}", spec.kind.name(), path_str));
+                drop(device);
+                let device = LinuxHidrawDevice::open(path_str, logger)?;
+                return Ok((device, spec));
+            }
         }
     }
 
     Err(QuadroError::DeviceNotFound)
+}
+
+pub fn find_quadro(logger: Box<dyn Logger>) -> Result<LinuxHidrawDevice, QuadroError> {
+    find_device(logger).map(|(device, _spec)| device)
 }

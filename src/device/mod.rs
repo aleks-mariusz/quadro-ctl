@@ -19,4 +19,4 @@ pub trait HidrawDevice {
 mod linux;
 
 #[cfg(target_os = "linux")]
-pub use linux::{LinuxHidrawDevice, find_quadro};
+pub use linux::{LinuxHidrawDevice, find_device, find_quadro};
